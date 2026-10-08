@@ -296,7 +296,11 @@ pub fn vm_service(v: &VpcNetwork, m: &Member, ns: &str, pool: &str) -> Result<Va
         .collect::<Vec<_>>();
     let mut metadata = metadata(v, &vm_service_name(m), Some(ns))?;
     metadata["labels"][VM_ACCESS_LABEL] = json!("true");
-    metadata["annotations"] = json!({"metallb.io/address-pool": pool});
+    metadata["annotations"] = json!({
+        "metallb.io/address-pool": pool,
+        // Lets the VM side publish a DNS name for the virtual IP.
+        "vpc.heterocloud.io/private-name": m.private_name(),
+    });
     Ok(json!({
         "apiVersion":"v1","kind":"Service","metadata":metadata,
         "spec":{"type":"LoadBalancer","externalTrafficPolicy":"Local",
