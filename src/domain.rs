@@ -22,6 +22,11 @@ pub struct VpcSpec {
     pub security_groups: Vec<String>,
     #[serde(default)]
     pub rules: Vec<VpcRule>,
+    /// Let virtual machines of this VPC talk to its members: each member gets a
+    /// private virtual IP on the VM network and exchanges traffic with the
+    /// operator-configured VM networks.
+    #[serde(default)]
+    pub vm_access: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, JsonSchema)]

@@ -119,6 +119,13 @@ spec:
                     items:
                       type: string
                     type: array
+                  vm_access:
+                    default: false
+                    description: |-
+                      Let virtual machines of this VPC talk to its members: each member gets a
+                      private virtual IP on the VM network and exchanges traffic with the
+                      operator-configured VM networks.
+                    type: boolean
                 required:
                 - region
                 type: object
@@ -177,6 +184,10 @@ spec:
                       type: array
                     service_instance_id:
                       format: uuid
+                      type: string
+                    vm_address:
+                      description: Virtual IP on the VM network (only with `vm_access`).
+                      nullable: true
                       type: string
                   required:
                   - ports

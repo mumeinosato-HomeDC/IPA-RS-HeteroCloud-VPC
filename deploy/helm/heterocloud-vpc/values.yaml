@@ -9,6 +9,10 @@ providerIssuer: heterocloud
 providerPublicKeysJson: "{}"
 apiReplicas: 2
 protectedCidrs: []
+# Networks of virtual machines that VPCs with `vm_access` may reach (empty disables it),
+# and the MetalLB pool that provides the VM-facing virtual IPs of VPC members.
+vmNetworks: []
+vmAddressPool: vpc
 gatewaySelector:
   matchLabels:
     vpc.heterocloud.io/gateway: "true"
