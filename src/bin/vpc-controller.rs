@@ -9,6 +9,12 @@ async fn main() -> anyhow::Result<()> {
         .filter(|s| !s.is_empty())
         .map(str::parse)
         .collect::<Result<Vec<_>, _>>()?;
+    let vm_networks = std::env::var("VPC_VM_NETWORKS")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(str::parse)
+        .collect::<Result<Vec<_>, _>>()?;
     let c = Config {
         client: kube::Client::try_default().await?,
         namespace: std::env::var("FLASH_NAMESPACE")
@@ -16,6 +22,8 @@ async fn main() -> anyhow::Result<()> {
         cluster_domain: std::env::var("CLUSTER_DOMAIN").unwrap_or_else(|_| "cluster.local".into()),
         gateway_selector: serde_json::from_str(&std::env::var("VPC_GATEWAY_SELECTOR_JSON")?)?,
         protected,
+        vm_networks,
+        vm_address_pool: std::env::var("VPC_VM_ADDRESS_POOL").unwrap_or_else(|_| "vpc".into()),
     };
     tokio::select! {result=run(c)=>result, _=tokio::signal::ctrl_c()=>Ok(())}
 }

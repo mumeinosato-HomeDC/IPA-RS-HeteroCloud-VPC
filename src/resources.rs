@@ -251,6 +251,59 @@ pub fn private_service(v: &VpcNetwork, m: &Member, ns: &str) -> Result<Value> {
         json!({"apiVersion":"v1","kind":"Service","metadata":metadata(v,&m.service_name(),Some(ns))?,"spec":{"type":"ClusterIP","selector":{VPC_LABEL:v.spec.service_instance_id.to_string(),ORG_LABEL:v.spec.organization_id.to_string(),INSTANCE_LABEL:m.id.to_string()},"ports":ports}}),
     )
 }
+fn vm_blocks(vm_networks: &[IpNet]) -> Vec<Value> {
+    vm_networks
+        .iter()
+        .map(|n| json!({"ipBlock":{"cidr":n.to_string()}}))
+        .collect()
+}
+pub fn vm_service_name(m: &Member) -> String {
+    format!("vm-{}", m.id.simple())
+}
+/// Lets a member exchange traffic with the VM networks. The VMs' own firewalls
+/// decide which VM may talk to which VPC, so this only opens the Flash side.
+pub fn vm_policy(v: &VpcNetwork, m: &Member, ns: &str, vm_networks: &[IpNet]) -> Result<Value> {
+    ensure!(m.belongs_to(v), "invalid VPC attachment");
+    let ports: BTreeSet<_> = m
+        .ports
+        .iter()
+        .map(|p| (p.protocol.kubernetes(), p.container_port))
+        .collect();
+    let ingress = if ports.is_empty() {
+        Vec::new()
+    } else {
+        vec![json!({
+            "from": vm_blocks(vm_networks),
+            "ports": ports.iter().map(|(proto, port)| json!({"protocol":proto,"port":port})).collect::<Vec<_>>(),
+        })]
+    };
+    Ok(json!({
+        "apiVersion":"networking.k8s.io/v1","kind":"NetworkPolicy",
+        "metadata":metadata(v,&format!("{}-vm",m.service_name()),Some(ns))?,
+        "spec":{"podSelector":selector(v,&[m.id]),"policyTypes":["Ingress","Egress"],
+                "ingress":ingress,"egress":[{"to":vm_blocks(vm_networks)}]}
+    }))
+}
+/// A LoadBalancer Service whose address comes from the VM-facing pool. The
+/// `Local` traffic policy keeps the VM's source address for the policy above.
+pub fn vm_service(v: &VpcNetwork, m: &Member, ns: &str, pool: &str) -> Result<Value> {
+    let mut seen = BTreeSet::new();
+    let ports = m
+        .ports
+        .iter()
+        .filter(|p| seen.insert((p.protocol.kubernetes(), p.container_port)))
+        .map(|p| json!({"name":p.name,"protocol":p.protocol.kubernetes(),"port":p.container_port,"targetPort":p.container_port}))
+        .collect::<Vec<_>>();
+    let mut metadata = metadata(v, &vm_service_name(m), Some(ns))?;
+    metadata["labels"][VM_ACCESS_LABEL] = json!("true");
+    metadata["annotations"] = json!({"metallb.io/address-pool": pool});
+    Ok(json!({
+        "apiVersion":"v1","kind":"Service","metadata":metadata,
+        "spec":{"type":"LoadBalancer","externalTrafficPolicy":"Local",
+                "selector":{VPC_LABEL:v.spec.service_instance_id.to_string(),ORG_LABEL:v.spec.organization_id.to_string(),INSTANCE_LABEL:m.id.to_string()},
+                "ports":ports}
+    }))
+}
 pub fn private_alias(v: &VpcNetwork, m: &Member, ns: &str, domain: &str) -> Result<Value> {
     Ok(
         json!({"apiVersion":"v1","kind":"Service","metadata":metadata(v,&m.private_name(),Some(&name(v.spec.service_instance_id)))?,"spec":{"type":"ExternalName","externalName":format!("{}.{}.svc.{}",m.service_name(),ns,domain)}}),
@@ -333,6 +386,59 @@ mod tests {
         assert_eq!(
             connection_policy(&v, &ms[1], &ms, "flash")?["spec"]["ingress"],
             json!([])
+        );
+        Ok(())
+    }
+    #[test]
+    fn vm_access_opens_only_the_vm_networks_on_declared_ports() -> Result<()> {
+        let (v, ms) = setup()?;
+        let nets: Vec<IpNet> = vec!["10.100.16.0/20".parse()?];
+        let policy = vm_policy(&v, &ms[0], "flash", &nets)?;
+        assert_eq!(
+            policy["metadata"]["name"],
+            format!("{}-vm", ms[0].service_name())
+        );
+        assert_eq!(
+            policy["spec"]["ingress"][0]["from"],
+            json!([{"ipBlock":{"cidr":"10.100.16.0/20"}}])
+        );
+        assert_eq!(
+            policy["spec"]["ingress"][0]["ports"],
+            json!([{"protocol":"TCP","port":22}])
+        );
+        assert_eq!(
+            policy["spec"]["egress"][0]["to"],
+            json!([{"ipBlock":{"cidr":"10.100.16.0/20"}}])
+        );
+        // The pod selector stays inside the VPC and tenant.
+        assert_eq!(
+            policy["spec"]["podSelector"]["matchLabels"][VPC_LABEL],
+            v.spec.service_instance_id.to_string()
+        );
+        let mut other = ms[0].clone();
+        other.organization = Uuid::from_u128(99);
+        assert!(vm_policy(&v, &other, "flash", &nets).is_err());
+        Ok(())
+    }
+    #[test]
+    fn vm_service_is_a_local_loadbalancer_from_the_vm_pool() -> Result<()> {
+        let (v, ms) = setup()?;
+        let svc = vm_service(&v, &ms[0], "flash", "vpc")?;
+        assert_eq!(svc["spec"]["type"], "LoadBalancer");
+        assert_eq!(svc["spec"]["externalTrafficPolicy"], "Local");
+        assert_eq!(
+            svc["metadata"]["annotations"]["metallb.io/address-pool"],
+            "vpc"
+        );
+        assert_eq!(svc["metadata"]["labels"][VM_ACCESS_LABEL], "true");
+        assert_eq!(
+            svc["metadata"]["labels"][VPC_LABEL],
+            v.spec.service_instance_id.to_string()
+        );
+        assert!(svc["spec"].get("loadBalancerClass").is_none());
+        assert_eq!(
+            svc["spec"]["selector"][INSTANCE_LABEL],
+            ms[0].id.to_string()
         );
         Ok(())
     }

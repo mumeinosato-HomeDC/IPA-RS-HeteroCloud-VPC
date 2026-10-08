@@ -62,6 +62,9 @@ pub struct VpcAttachmentStatus {
     pub service_instance_id: Uuid,
     pub private_dns: String,
     pub private_ip: Option<String>,
+    /// Virtual IP on the VM network (only with `vm_access`).
+    #[serde(default)]
+    pub vm_address: Option<String>,
     pub security_groups: Vec<String>,
     pub ports: Vec<resources::Port>,
 }
@@ -70,6 +73,8 @@ pub const VPC_LABEL: &str = "vpc.heterocloud.io/network";
 pub const READY_LABEL: &str = "vpc.heterocloud.io/egress-ready";
 pub const INSTANCE_LABEL: &str = "flash.heterocloud.io/instance";
 pub const ORG_LABEL: &str = "flash.heterocloud.io/organization";
+/// Marks the per-member Service that publishes a VIP to the VMs of a VPC.
+pub const VM_ACCESS_LABEL: &str = "vpc.heterocloud.io/vm-access";
 pub fn name(id: Uuid) -> String {
     format!("hc-vpc-{}", id.simple())
 }

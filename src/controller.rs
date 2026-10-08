@@ -15,6 +15,10 @@ pub struct Config {
     pub cluster_domain: String,
     pub gateway_selector: Value,
     pub protected: Vec<IpNet>,
+    /// Networks of the virtual machines that VPCs with `vm_access` may reach.
+    pub vm_networks: Vec<IpNet>,
+    /// MetalLB address pool for the per-member VM-facing virtual IPs.
+    pub vm_address_pool: String,
 }
 async fn apply(
     c: &Config,
@@ -116,12 +120,19 @@ pub async fn reconcile(c: &Config, v: &VpcNetwork, flashes: &[DynamicObject]) ->
     let mut policies = BTreeSet::new();
     let mut services = BTreeSet::new();
     let mut aliases = BTreeSet::new();
+    let vm_access = v.spec.network.vm_access && !c.vm_networks.is_empty();
     for m in &members {
         policies.insert(m.service_name());
         policies.insert(format!("{}-nat", m.service_name()));
+        if vm_access {
+            policies.insert(format!("{}-vm", m.service_name()));
+        }
         if !m.ports.is_empty() {
             services.insert(m.service_name());
             aliases.insert(m.private_name());
+            if vm_access {
+                services.insert(vm_service_name(m));
+            }
         }
     }
     // Revoke stale attachments and aliases before publishing replacements.
@@ -183,6 +194,16 @@ pub async fn reconcile(c: &Config, v: &VpcNetwork, flashes: &[DynamicObject]) ->
         .await?;
         let dns = format!("{}.{}.svc.{}", m.private_name(), n, c.cluster_domain);
         let mut cluster_ip = None;
+        let mut vm_address = None;
+        if vm_access {
+            apply(
+                c,
+                &netpol,
+                Some(&c.namespace),
+                vm_policy(v, m, &c.namespace, &c.vm_networks)?,
+            )
+            .await?;
+        }
         if !m.ports.is_empty() {
             let service = apply(
                 c,
@@ -203,11 +224,26 @@ pub async fn reconcile(c: &Config, v: &VpcNetwork, flashes: &[DynamicObject]) ->
                 private_alias(v, m, &c.namespace, &c.cluster_domain)?,
             )
             .await?;
+            if vm_access {
+                let published = apply(
+                    c,
+                    &svc,
+                    Some(&c.namespace),
+                    vm_service(v, m, &c.namespace, &c.vm_address_pool)?,
+                )
+                .await?;
+                vm_address = published
+                    .data
+                    .pointer("/status/loadBalancer/ingress/0/ip")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+            }
         }
         attachments.push(VpcAttachmentStatus {
             service_instance_id: m.id,
             private_dns: dns.clone(),
             private_ip: cluster_ip.clone(),
+            vm_address,
             security_groups: m.network.security_groups.clone(),
             ports: m.ports.clone(),
         });
